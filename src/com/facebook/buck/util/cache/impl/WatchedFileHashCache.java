@@ -19,6 +19,7 @@ package com.facebook.buck.util.cache.impl;
 import com.facebook.buck.core.filesystems.RelPath;
 import com.facebook.buck.core.util.log.Logger;
 import com.facebook.buck.io.filesystem.ProjectFilesystem;
+import com.facebook.buck.io.watchman.WatchmanMultiplePathEvent;
 import com.facebook.buck.io.watchman.WatchmanOverflowEvent;
 import com.facebook.buck.io.watchman.WatchmanPathEvent;
 import com.facebook.buck.util.cache.FileHashCacheMode;
@@ -40,18 +41,34 @@ public class WatchedFileHashCache extends DefaultFileHashCache {
    * {@link ProjectFilesystem} root.
    */
   @Subscribe
-  public synchronized void onFileSystemChange(WatchmanPathEvent event) {
+  public void onFileSystemChange(WatchmanPathEvent event) {
     // Path event, remove the path from the cache as it has been changed, added or deleted.
     RelPath path = event.getPath().normalize();
     LOG.verbose("Invalidating %s", path);
     fileHashCacheEngine.invalidateWithParents(path.getPath());
   }
 
+  @Subscribe
+  public void onFileSystemChange(WatchmanMultiplePathEvent event) {
+    event.getChanges().forEach(change -> {
+      Path p = change.getPath().normalize();
+      LOG.verbose("Invalidating %s", p);
+      fileHashCacheEngine.invalidateWithParents(p);
+    });
+  }
+
   @SuppressWarnings("unused")
   @Subscribe
-  public synchronized void onFileSystemChange(WatchmanOverflowEvent event) {
+  public void onFileSystemChange(WatchmanOverflowEvent event) {
     // Non-path change event, likely an overflow due to many change events: invalidate everything.
     LOG.debug("Invalidating all");
     invalidateAll();
+  }
+
+  @Override
+  public void invalidateAll(Iterable<? extends Path> paths) {
+    for (Path path : paths) {
+      fileHashCacheEngine.invalidateWithParents(path);
+    }
   }
 }

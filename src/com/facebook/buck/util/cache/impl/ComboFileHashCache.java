@@ -39,7 +39,7 @@ class ComboFileHashCache implements FileHashCacheEngine {
       ValueLoader<Long> sizeLoader,
       ProjectFilesystem filesystem) {
     this(
-        LoadingCacheFileHashCache.createWithStats(hashLoader, sizeLoader),
+        LoadingCacheFileHashCache.createWithStats(hashLoader, sizeLoader, 0, false),
         FileSystemMapFileHashCache.createWithStats(hashLoader, sizeLoader, filesystem));
   }
 

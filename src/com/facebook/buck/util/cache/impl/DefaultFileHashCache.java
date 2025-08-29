@@ -103,7 +103,7 @@ public class DefaultFileHashCache implements ProjectFileHashCache {
         fileHashCacheEngine = new ComboFileHashCache(hashLoader, sizeLoader, projectFilesystem);
         break;
       case LOADING_CACHE:
-        fileHashCacheEngine = LoadingCacheFileHashCache.createWithStats(hashLoader, sizeLoader);
+        fileHashCacheEngine = LoadingCacheFileHashCache.createWithStats(hashLoader, sizeLoader, 0, false);
         break;
       case PREFIX_TREE:
         fileHashCacheEngine =
@@ -119,7 +119,7 @@ public class DefaultFileHashCache implements ProjectFileHashCache {
       case LIMITED_PREFIX_TREE_PARALLEL:
         fileHashCacheEngine =
             new ComboFileHashCache(
-                LoadingCacheFileHashCache.createWithStats(hashLoader, sizeLoader),
+                LoadingCacheFileHashCache.createWithStats(hashLoader, sizeLoader, 0, false),
                 new StatsTrackingFileHashCacheEngine(
                     new LimitedFileHashCacheEngine(
                         projectFilesystem, fileHashLoader, dirHashLoader, sizeLoader),
@@ -142,6 +142,67 @@ public class DefaultFileHashCache implements ProjectFileHashCache {
       ProjectFilesystem projectFilesystem, FileHashCacheMode fileHashCacheMode) {
     return new DefaultFileHashCache(
         projectFilesystem, getDefaultPathPredicate(projectFilesystem), fileHashCacheMode);
+  }
+
+  /**
+   * Create a {@link DefaultFileHashCache} backed by an LRU cache with a bounded number of entries
+   * and strong references for values.
+   */
+  public static DefaultFileHashCache createBoundedFileHashCache(
+      ProjectFilesystem projectFilesystem, long maxEntries) {
+    DefaultFileHashCache cache =
+        new DefaultFileHashCache(
+            projectFilesystem, getDefaultPathPredicate(projectFilesystem), FileHashCacheMode.LOADING_CACHE);
+    FileHashCacheEngine.ValueLoader<HashCodeAndFileType> hashLoader =
+        path -> {
+          try {
+            return cache.getHashCodeAndFileType(path);
+          } catch (IOException e) {
+            throw new RuntimeException(e);
+          }
+        };
+    FileHashCacheEngine.ValueLoader<Long> sizeLoader =
+        path -> {
+          try {
+            return cache.getPathSize(path);
+          } catch (IOException e) {
+            throw new RuntimeException(e);
+          }
+        };
+    cache.fileHashCacheEngine =
+        LoadingCacheFileHashCache.createWithStats(hashLoader, sizeLoader, maxEntries, false);
+    return cache;
+  }
+
+  /**
+   * Create a {@link DefaultFileHashCache} backed by an LRU cache with a bounded number of entries
+   * where cached values are held with {@link java.lang.ref.SoftReference}s allowing the GC to
+   * reclaim memory when needed.
+   */
+  public static DefaultFileHashCache createBoundedSoftReferenceFileHashCache(
+      ProjectFilesystem projectFilesystem, long maxEntries) {
+    DefaultFileHashCache cache =
+        new DefaultFileHashCache(
+            projectFilesystem, getDefaultPathPredicate(projectFilesystem), FileHashCacheMode.LOADING_CACHE);
+    FileHashCacheEngine.ValueLoader<HashCodeAndFileType> hashLoader =
+        path -> {
+          try {
+            return cache.getHashCodeAndFileType(path);
+          } catch (IOException e) {
+            throw new RuntimeException(e);
+          }
+        };
+    FileHashCacheEngine.ValueLoader<Long> sizeLoader =
+        path -> {
+          try {
+            return cache.getPathSize(path);
+          } catch (IOException e) {
+            throw new RuntimeException(e);
+          }
+        };
+    cache.fileHashCacheEngine =
+        LoadingCacheFileHashCache.createWithStats(hashLoader, sizeLoader, maxEntries, true);
+    return cache;
   }
 
   /**
@@ -252,6 +313,13 @@ public class DefaultFileHashCache implements ProjectFileHashCache {
   @Override
   public void invalidate(Path relativePath) {
     fileHashCacheEngine.invalidate(relativePath);
+  }
+
+  @Override
+  public void invalidateAll(Iterable<? extends Path> paths) {
+    for (Path path : paths) {
+      invalidate(path);
+    }
   }
 
   @Override

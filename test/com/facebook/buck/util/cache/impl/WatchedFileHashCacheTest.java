@@ -26,7 +26,12 @@ import com.facebook.buck.core.filesystems.RelPath;
 import com.facebook.buck.io.filesystem.ProjectFilesystem;
 import com.facebook.buck.io.filesystem.TestProjectFilesystems;
 import com.facebook.buck.io.filesystem.impl.FakeProjectFilesystem;
+import com.facebook.buck.io.watchman.ImmutableChange;
+import com.facebook.buck.io.watchman.ImmutableWatchmanMultiplePathEvent;
 import com.facebook.buck.io.watchman.WatchmanEvent.Kind;
+import com.facebook.buck.io.watchman.WatchmanEvent.Type;
+import com.facebook.buck.io.watchman.WatchmanMultiplePathEvent;
+import com.facebook.buck.io.watchman.WatchmanMultiplePathEvent.Change;
 import com.facebook.buck.io.watchman.WatchmanOverflowEvent;
 import com.facebook.buck.io.watchman.WatchmanPathEvent;
 import com.facebook.buck.testutil.TemporaryPaths;
@@ -141,6 +146,29 @@ public class WatchedFileHashCacheTest {
         "Cache should not contain path",
         cache.fileHashCacheEngine.getSizeIfPresent(path),
         nullValue());
+  }
+
+  @Test
+  public void whenNotifiedOfMultiplePathEventCacheEntriesAreRemoved() throws IOException {
+    ProjectFilesystem filesystem = new FakeProjectFilesystem();
+    WatchedFileHashCache cache = new WatchedFileHashCache(filesystem, fileHashCacheMode);
+    Path path1 = Paths.get("One.java");
+    Path path2 = Paths.get("Two.java");
+    filesystem.touch(path1);
+    filesystem.touch(path2);
+
+    HashCodeAndFileType value = HashCodeAndFileType.ofFile(HashCode.fromInt(42));
+    cache.fileHashCacheEngine.put(path1, value);
+    cache.fileHashCacheEngine.put(path2, value);
+
+    Change change1 = ImmutableChange.of(Type.FILE, path1, Kind.MODIFY);
+    Change change2 = ImmutableChange.of(Type.FILE, path2, Kind.MODIFY);
+    cache.onFileSystemChange(
+        ImmutableWatchmanMultiplePathEvent.of(
+            filesystem.getRootPath(), ImmutableList.of(change1, change2)));
+
+    assertFalse(cache.getIfPresent(path1).isPresent());
+    assertFalse(cache.getIfPresent(path2).isPresent());
   }
 
   @Test
