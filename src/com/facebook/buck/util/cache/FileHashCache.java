@@ -34,6 +34,16 @@ public interface FileHashCache extends FileHashLoader {
 
   void invalidate(Path path);
 
+  /**
+   * Invalidate multiple paths in a single operation. The default implementation iterates and
+   * delegates to {@link #invalidate(Path)} for each entry.
+   */
+  default void invalidateAll(Iterable<? extends Path> paths) {
+    for (Path path : paths) {
+      invalidate(path);
+    }
+  }
+
   void invalidateAll();
 
   void set(Path path, HashCode hashCode) throws IOException;

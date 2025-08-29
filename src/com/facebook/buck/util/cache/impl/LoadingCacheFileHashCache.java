@@ -39,37 +39,64 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
-class LoadingCacheFileHashCache implements FileHashCacheEngine {
+class LoadingCacheFileHashCache implements FileHashCacheEngine, AutoCloseable {
 
   private final LoadingCache<Path, HashCodeAndFileType> loadingCache;
   private final LoadingCache<Path, Long> sizeCache;
   private final Map<Path, Set<Path>> parentToChildCache = new ConcurrentHashMap<>();
+  private final ScheduledExecutorService maintenanceExecutor;
 
   private LoadingCacheFileHashCache(
-      ValueLoader<HashCodeAndFileType> hashLoader, ValueLoader<Long> sizeLoader) {
+      ValueLoader<HashCodeAndFileType> hashLoader,
+      ValueLoader<Long> sizeLoader,
+      long maxEntries,
+      boolean softValues) {
+    CacheBuilder<Object, Object> builder = CacheBuilder.newBuilder();
+    if (maxEntries > 0) {
+      builder = builder.maximumSize(maxEntries);
+    }
+    if (softValues) {
+      builder = builder.softValues();
+    }
     loadingCache =
-        CacheBuilder.newBuilder()
-            .build(
-                new CacheLoader<Path, HashCodeAndFileType>() {
-                  @Override
-                  public HashCodeAndFileType load(Path path) {
-                    HashCodeAndFileType hashCodeAndFileType = hashLoader.load(path);
-                    updateParent(path);
-                    return hashCodeAndFileType;
-                  }
-                });
+        builder.build(
+            new CacheLoader<Path, HashCodeAndFileType>() {
+              @Override
+              public HashCodeAndFileType load(Path path) {
+                HashCodeAndFileType hashCodeAndFileType = hashLoader.load(path);
+                updateParent(path);
+                return hashCodeAndFileType;
+              }
+            });
+
+    CacheBuilder<Object, Object> sizeBuilder = CacheBuilder.newBuilder();
+    if (maxEntries > 0) {
+      sizeBuilder = sizeBuilder.maximumSize(maxEntries);
+    }
     sizeCache =
-        CacheBuilder.newBuilder()
-            .build(
-                new CacheLoader<Path, Long>() {
-                  @Override
-                  public Long load(Path path) {
-                    long size = sizeLoader.load(path);
-                    updateParent(path);
-                    return size;
-                  }
-                });
+        sizeBuilder.build(
+            new CacheLoader<Path, Long>() {
+              @Override
+              public Long load(Path path) {
+                long size = sizeLoader.load(path);
+                updateParent(path);
+                return size;
+              }
+            });
+
+    maintenanceExecutor = Executors.newSingleThreadScheduledExecutor();
+    maintenanceExecutor.scheduleWithFixedDelay(
+        () -> {
+          loadingCache.cleanUp();
+          sizeCache.cleanUp();
+        },
+        1,
+        1,
+        TimeUnit.MINUTES);
   }
 
   private void updateParent(Path path) {
@@ -82,9 +109,12 @@ class LoadingCacheFileHashCache implements FileHashCacheEngine {
   }
 
   public static FileHashCacheEngine createWithStats(
-      ValueLoader<HashCodeAndFileType> hashLoader, ValueLoader<Long> sizeLoader) {
+      ValueLoader<HashCodeAndFileType> hashLoader,
+      ValueLoader<Long> sizeLoader,
+      long maxEntries,
+      boolean softValues) {
     return new StatsTrackingFileHashCacheEngine(
-        new LoadingCacheFileHashCache(hashLoader, sizeLoader), "old");
+        new LoadingCacheFileHashCache(hashLoader, sizeLoader, maxEntries, softValues), "old");
   }
 
   @Override
@@ -198,6 +228,11 @@ class LoadingCacheFileHashCache implements FileHashCacheEngine {
     loadingCache.invalidateAll();
     sizeCache.invalidateAll();
     parentToChildCache.clear();
+  }
+
+  @Override
+  public void close() {
+    maintenanceExecutor.shutdownNow();
   }
 
   @Override
