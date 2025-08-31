@@ -43,6 +43,12 @@ public interface FileHashCacheEngine {
 
   void invalidateWithParents(Path path);
 
+  default void invalidateAll(Iterable<Path> paths) {
+    for (Path path : paths) {
+      invalidate(path);
+    }
+  }
+
   HashCode get(Path path) throws IOException;
 
   HashCode getForArchiveMember(Path archiveRelativePath, Path memberPath) throws IOException;

@@ -61,6 +61,14 @@ public class DefaultFileHashCache implements ProjectFileHashCache {
       ProjectFilesystem projectFilesystem,
       Predicate<Path> ignoredPredicate,
       FileHashCacheMode fileHashCacheMode) {
+    this(projectFilesystem, ignoredPredicate, fileHashCacheMode, Integer.MAX_VALUE);
+  }
+
+  protected DefaultFileHashCache(
+      ProjectFilesystem projectFilesystem,
+      Predicate<Path> ignoredPredicate,
+      FileHashCacheMode fileHashCacheMode,
+      int maxEntries) {
     this.projectFilesystem = projectFilesystem;
     this.ignoredPredicate = ignoredPredicate;
     FileHashCacheEngine.ValueLoader<HashCodeAndFileType> hashLoader =
@@ -113,7 +121,7 @@ public class DefaultFileHashCache implements ProjectFileHashCache {
         fileHashCacheEngine =
             new StatsTrackingFileHashCacheEngine(
                 new LimitedFileHashCacheEngine(
-                    projectFilesystem, fileHashLoader, dirHashLoader, sizeLoader),
+                    projectFilesystem, fileHashLoader, dirHashLoader, sizeLoader, maxEntries),
                 "limited");
         break;
       case LIMITED_PREFIX_TREE_PARALLEL:
@@ -122,7 +130,11 @@ public class DefaultFileHashCache implements ProjectFileHashCache {
                 LoadingCacheFileHashCache.createWithStats(hashLoader, sizeLoader),
                 new StatsTrackingFileHashCacheEngine(
                     new LimitedFileHashCacheEngine(
-                        projectFilesystem, fileHashLoader, dirHashLoader, sizeLoader),
+                        projectFilesystem,
+                        fileHashLoader,
+                        dirHashLoader,
+                        sizeLoader,
+                        maxEntries),
                     "limited"));
         break;
       default:
@@ -138,10 +150,25 @@ public class DefaultFileHashCache implements ProjectFileHashCache {
         fileHashCacheMode);
   }
 
+  public static DefaultFileHashCache createBuckOutFileHashCache(
+      ProjectFilesystem projectFilesystem, FileHashCacheMode fileHashCacheMode, int maxEntries) {
+    return new DefaultFileHashCache(
+        projectFilesystem.createBuckOutProjectFilesystem(),
+        (path) -> !isInBuckOut(projectFilesystem, path),
+        fileHashCacheMode,
+        maxEntries);
+  }
+
   public static DefaultFileHashCache createDefaultFileHashCache(
       ProjectFilesystem projectFilesystem, FileHashCacheMode fileHashCacheMode) {
     return new DefaultFileHashCache(
         projectFilesystem, getDefaultPathPredicate(projectFilesystem), fileHashCacheMode);
+  }
+
+  public static DefaultFileHashCache createDefaultFileHashCache(
+      ProjectFilesystem projectFilesystem, FileHashCacheMode fileHashCacheMode, int maxEntries) {
+    return new DefaultFileHashCache(
+        projectFilesystem, getDefaultPathPredicate(projectFilesystem), fileHashCacheMode, maxEntries);
   }
 
   /**
