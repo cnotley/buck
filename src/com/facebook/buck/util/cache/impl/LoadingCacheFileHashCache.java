@@ -28,6 +28,7 @@ import com.google.common.cache.LoadingCache;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import com.google.common.hash.HashCode;
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import java.io.IOException;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
@@ -35,41 +36,76 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
-class LoadingCacheFileHashCache implements FileHashCacheEngine {
+class LoadingCacheFileHashCache implements FileHashCacheEngine, AutoCloseable {
 
   private final LoadingCache<Path, HashCodeAndFileType> loadingCache;
   private final LoadingCache<Path, Long> sizeCache;
   private final Map<Path, Set<Path>> parentToChildCache = new ConcurrentHashMap<>();
+  private final ScheduledExecutorService maintenanceExecutor;
+
+  private LoadingCacheFileHashCache(
+      ValueLoader<HashCodeAndFileType> hashLoader,
+      ValueLoader<Long> sizeLoader,
+      OptionalLong maximumEntries,
+      boolean softValues) {
+    CacheBuilder<Object, Object> hashBuilder = CacheBuilder.newBuilder();
+    CacheBuilder<Object, Object> sizeBuilder = CacheBuilder.newBuilder();
+    maximumEntries.ifPresent(hashBuilder::maximumSize);
+    maximumEntries.ifPresent(sizeBuilder::maximumSize);
+    if (softValues) {
+      hashBuilder.softValues();
+      sizeBuilder.softValues();
+    }
+    loadingCache =
+        hashBuilder.build(
+            new CacheLoader<Path, HashCodeAndFileType>() {
+              @Override
+              public HashCodeAndFileType load(Path path) {
+                HashCodeAndFileType hashCodeAndFileType = hashLoader.load(path);
+                updateParent(path);
+                return hashCodeAndFileType;
+              }
+            });
+    sizeCache =
+        sizeBuilder.build(
+            new CacheLoader<Path, Long>() {
+              @Override
+              public Long load(Path path) {
+                long size = sizeLoader.load(path);
+                updateParent(path);
+                return size;
+              }
+            });
+
+    // Run cache maintenance periodically to enforce size bounds and remove GC'd values.
+    maintenanceExecutor =
+        Executors.newSingleThreadScheduledExecutor(
+            new ThreadFactoryBuilder()
+                .setDaemon(true)
+                .setNameFormat("file-hash-cache-maintenance-%d")
+                .build());
+    maintenanceExecutor.scheduleWithFixedDelay(
+        () -> {
+          loadingCache.cleanUp();
+          sizeCache.cleanUp();
+        },
+        1,
+        1,
+        TimeUnit.MINUTES);
+  }
 
   private LoadingCacheFileHashCache(
       ValueLoader<HashCodeAndFileType> hashLoader, ValueLoader<Long> sizeLoader) {
-    loadingCache =
-        CacheBuilder.newBuilder()
-            .build(
-                new CacheLoader<Path, HashCodeAndFileType>() {
-                  @Override
-                  public HashCodeAndFileType load(Path path) {
-                    HashCodeAndFileType hashCodeAndFileType = hashLoader.load(path);
-                    updateParent(path);
-                    return hashCodeAndFileType;
-                  }
-                });
-    sizeCache =
-        CacheBuilder.newBuilder()
-            .build(
-                new CacheLoader<Path, Long>() {
-                  @Override
-                  public Long load(Path path) {
-                    long size = sizeLoader.load(path);
-                    updateParent(path);
-                    return size;
-                  }
-                });
+    this(hashLoader, sizeLoader, OptionalLong.empty(), false);
   }
 
   private void updateParent(Path path) {
@@ -85,6 +121,22 @@ class LoadingCacheFileHashCache implements FileHashCacheEngine {
       ValueLoader<HashCodeAndFileType> hashLoader, ValueLoader<Long> sizeLoader) {
     return new StatsTrackingFileHashCacheEngine(
         new LoadingCacheFileHashCache(hashLoader, sizeLoader), "old");
+  }
+
+  public static FileHashCacheEngine createWithStats(
+      ValueLoader<HashCodeAndFileType> hashLoader,
+      ValueLoader<Long> sizeLoader,
+      long maximumEntries,
+      boolean softValues) {
+    return new StatsTrackingFileHashCacheEngine(
+        new LoadingCacheFileHashCache(
+            hashLoader, sizeLoader, OptionalLong.of(maximumEntries), softValues),
+        "old");
+  }
+
+  @Override
+  public void close() {
+    maintenanceExecutor.shutdownNow();
   }
 
   @Override

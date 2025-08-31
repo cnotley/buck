@@ -47,7 +47,7 @@ import java.util.Optional;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
 
-public class DefaultFileHashCache implements ProjectFileHashCache {
+public class DefaultFileHashCache implements ProjectFileHashCache, AutoCloseable {
 
   private static final boolean SHOULD_CHECK_IGNORED_PATHS =
       Boolean.getBoolean("buck.DefaultFileHashCache.check_ignored_paths");
@@ -130,6 +130,36 @@ public class DefaultFileHashCache implements ProjectFileHashCache {
     }
   }
 
+  private DefaultFileHashCache(
+      ProjectFilesystem projectFilesystem,
+      Predicate<Path> ignoredPredicate,
+      long maximumEntries,
+      boolean softValues) {
+    this.projectFilesystem = projectFilesystem;
+    this.ignoredPredicate = ignoredPredicate;
+
+    FileHashCacheEngine.ValueLoader<HashCodeAndFileType> hashLoader =
+        path -> {
+          try {
+            return getHashCodeAndFileType(path);
+          } catch (IOException e) {
+            throw new RuntimeException(e);
+          }
+        };
+
+    FileHashCacheEngine.ValueLoader<Long> sizeLoader =
+        path -> {
+          try {
+            return getPathSize(path);
+          } catch (IOException e) {
+            throw new RuntimeException(e);
+          }
+        };
+
+    fileHashCacheEngine =
+        LoadingCacheFileHashCache.createWithStats(hashLoader, sizeLoader, maximumEntries, softValues);
+  }
+
   public static DefaultFileHashCache createBuckOutFileHashCache(
       ProjectFilesystem projectFilesystem, FileHashCacheMode fileHashCacheMode) {
     return new DefaultFileHashCache(
@@ -142,6 +172,18 @@ public class DefaultFileHashCache implements ProjectFileHashCache {
       ProjectFilesystem projectFilesystem, FileHashCacheMode fileHashCacheMode) {
     return new DefaultFileHashCache(
         projectFilesystem, getDefaultPathPredicate(projectFilesystem), fileHashCacheMode);
+  }
+
+  public static DefaultFileHashCache createBoundedFileHashCache(
+      ProjectFilesystem projectFilesystem, long maximumEntries) {
+    return new DefaultFileHashCache(
+        projectFilesystem, getDefaultPathPredicate(projectFilesystem), maximumEntries, false);
+  }
+
+  public static DefaultFileHashCache createMemorySensitiveFileHashCache(
+      ProjectFilesystem projectFilesystem, long maximumEntries) {
+    return new DefaultFileHashCache(
+        projectFilesystem, getDefaultPathPredicate(projectFilesystem), maximumEntries, true);
   }
 
   /**
@@ -254,6 +296,12 @@ public class DefaultFileHashCache implements ProjectFileHashCache {
     fileHashCacheEngine.invalidate(relativePath);
   }
 
+  public void invalidate(Iterable<Path> paths) {
+    for (Path path : paths) {
+      fileHashCacheEngine.invalidate(path);
+    }
+  }
+
   @Override
   public void invalidateAll() {
     fileHashCacheEngine.invalidateAll();
@@ -344,5 +392,16 @@ public class DefaultFileHashCache implements ProjectFileHashCache {
 
   public List<AbstractBuckEvent> getStatsEvents() {
     return fileHashCacheEngine.getStatsEvents();
+  }
+
+  @Override
+  public void close() {
+    if (fileHashCacheEngine instanceof AutoCloseable) {
+      try {
+        ((AutoCloseable) fileHashCacheEngine).close();
+      } catch (Exception e) {
+        // ignore
+      }
+    }
   }
 }
