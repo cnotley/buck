@@ -144,6 +144,56 @@ public class DefaultFileHashCache implements ProjectFileHashCache {
         projectFilesystem, getDefaultPathPredicate(projectFilesystem), fileHashCacheMode);
   }
 
+  public static DefaultFileHashCache createBoundedFileHashCache(
+      ProjectFilesystem projectFilesystem, long maxEntries) {
+    DefaultFileHashCache cache =
+        createDefaultFileHashCache(projectFilesystem, FileHashCacheMode.LOADING_CACHE);
+    FileHashCacheEngine.ValueLoader<HashCodeAndFileType> hashLoader =
+        path -> {
+          try {
+            return cache.getHashCodeAndFileType(path);
+          } catch (IOException e) {
+            throw new RuntimeException(e);
+          }
+        };
+    FileHashCacheEngine.ValueLoader<Long> sizeLoader =
+        path -> {
+          try {
+            return cache.getPathSize(path);
+          } catch (IOException e) {
+            throw new RuntimeException(e);
+          }
+        };
+    cache.fileHashCacheEngine =
+        LoadingCacheFileHashCache.createWithMaxEntries(hashLoader, sizeLoader, maxEntries);
+    return cache;
+  }
+
+  public static DefaultFileHashCache createMemorySensitiveFileHashCache(
+      ProjectFilesystem projectFilesystem, int aggressiveness) {
+    DefaultFileHashCache cache =
+        createDefaultFileHashCache(projectFilesystem, FileHashCacheMode.LOADING_CACHE);
+    FileHashCacheEngine.ValueLoader<HashCodeAndFileType> hashLoader =
+        path -> {
+          try {
+            return cache.getHashCodeAndFileType(path);
+          } catch (IOException e) {
+            throw new RuntimeException(e);
+          }
+        };
+    FileHashCacheEngine.ValueLoader<Long> sizeLoader =
+        path -> {
+          try {
+            return cache.getPathSize(path);
+          } catch (IOException e) {
+            throw new RuntimeException(e);
+          }
+        };
+    cache.fileHashCacheEngine =
+        LoadingCacheFileHashCache.createWithSoftValues(hashLoader, sizeLoader, aggressiveness);
+    return cache;
+  }
+
   /**
    * This predicate matches files that might be result of builds or files that are explicitly
    * ignored.
