@@ -160,6 +160,26 @@ public class DefaultFileHashCacheTest {
   }
 
   @Test
+  public void boundedCacheEvictsLeastRecentlyUsed() throws IOException {
+    Assume.assumeTrue(fileHashCacheMode == FileHashCacheMode.LOADING_CACHE);
+    ProjectFilesystem filesystem = new FakeProjectFilesystem();
+    DefaultFileHashCache cache =
+        DefaultFileHashCache.createBoundedFileHashCache(filesystem, 2);
+    Path p1 = Paths.get("p1");
+    filesystem.writeContentsToPath("1", p1);
+    cache.get(p1);
+    Path p2 = Paths.get("p2");
+    filesystem.writeContentsToPath("2", p2);
+    cache.get(p2);
+    Path p3 = Paths.get("p3");
+    filesystem.writeContentsToPath("3", p3);
+    cache.get(p3);
+    assertFalse(cache.getIfPresent(p1).isPresent());
+    assertTrue(cache.getIfPresent(p2).isPresent());
+    assertTrue(cache.getIfPresent(p3).isPresent());
+  }
+
+  @Test
   public void whenDirectoryIsPutThenInvalidatedCacheDoesNotContainPathOrChildren()
       throws IOException {
     ProjectFilesystem filesystem = new FakeProjectFilesystem();
