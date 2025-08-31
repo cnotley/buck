@@ -158,17 +158,41 @@ class LimitedFileHashCacheEngine implements FileHashCacheEngine {
   private final ValueLoader<HashCodeAndFileType> dirHashLoader;
   private final ValueLoader<Long> sizeLoader;
   private final FileSystemMap<Data> fileSystemMap;
+  private final java.util.Map<Path, Boolean> lru;
+  private final int maxEntries;
 
   public LimitedFileHashCacheEngine(
       ProjectFilesystem filesystem,
       ValueLoader<HashCode> fileHashLoader,
       ValueLoader<HashCodeAndFileType> dirHashLoader,
       ValueLoader<Long> sizeLoader) {
+    this(filesystem, fileHashLoader, dirHashLoader, sizeLoader, Integer.MAX_VALUE);
+  }
+
+  public LimitedFileHashCacheEngine(
+      ProjectFilesystem filesystem,
+      ValueLoader<HashCode> fileHashLoader,
+      ValueLoader<HashCodeAndFileType> dirHashLoader,
+      ValueLoader<Long> sizeLoader,
+      int maxEntries) {
     this.filesystem = filesystem;
     this.fileHashLoader = fileHashLoader;
     this.dirHashLoader = dirHashLoader;
     this.sizeLoader = sizeLoader;
+    this.maxEntries = maxEntries;
     this.fileSystemMap = new FileSystemMap<>(Data::new, filesystem);
+    this.lru =
+        Collections.synchronizedMap(
+            new java.util.LinkedHashMap<Path, Boolean>(16, 0.75f, true) {
+              @Override
+              protected boolean removeEldestEntry(java.util.Map.Entry<Path, Boolean> eldest) {
+                if (size() > LimitedFileHashCacheEngine.this.maxEntries) {
+                  fileSystemMap.remove(eldest.getKey());
+                  return true;
+                }
+                return false;
+              }
+            });
   }
 
   private byte loadType(Path path) {
@@ -190,16 +214,19 @@ class LimitedFileHashCacheEngine implements FileHashCacheEngine {
   @Override
   public void put(Path path, HashCodeAndFileType value) {
     fileSystemMap.get(path).set(value);
+    recordAccess(path);
   }
 
   @Override
   public void putSize(Path path, long value) {
     fileSystemMap.get(path).setSize(value);
+    recordAccess(path);
   }
 
   @Override
   public void invalidate(Path path) {
     fileSystemMap.remove(path);
+    lru.remove(path);
   }
 
   @Override
@@ -209,7 +236,9 @@ class LimitedFileHashCacheEngine implements FileHashCacheEngine {
 
   @Override
   public HashCode get(Path path) {
-    return fileSystemMap.get(path).getHashCodeAndFileType().getHashCode();
+    HashCode result = fileSystemMap.get(path).getHashCodeAndFileType().getHashCode();
+    recordAccess(path);
+    return result;
   }
 
   @Override
@@ -219,6 +248,7 @@ class LimitedFileHashCacheEngine implements FileHashCacheEngine {
     Preconditions.checkState(
         isArchive(relativeFilePath), "%s is not an archive.", relativeFilePath);
     Data data = fileSystemMap.get(relativeFilePath);
+    recordAccess(relativeFilePath);
     HashCode hashCode = data.getJarContentsHashes().get(memberPath);
     if (hashCode == null) {
       throw new NoSuchFileException(archiveRelativePath.toString());
@@ -232,12 +262,29 @@ class LimitedFileHashCacheEngine implements FileHashCacheEngine {
 
   @Override
   public long getSize(Path relativePath) {
-    return fileSystemMap.get(relativePath).getSize();
+    long result = fileSystemMap.get(relativePath).getSize();
+    recordAccess(relativePath);
+    return result;
   }
 
   @Override
   public void invalidateAll() {
     fileSystemMap.removeAll();
+    lru.clear();
+  }
+
+  @Override
+  public void invalidateAll(Iterable<Path> paths) {
+    synchronized (lru) {
+      for (Path path : paths) {
+        fileSystemMap.remove(path);
+        lru.remove(path);
+      }
+    }
+  }
+
+  private void recordAccess(Path path) {
+    lru.put(path, Boolean.TRUE);
   }
 
   @Override
