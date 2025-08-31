@@ -160,6 +160,45 @@ public class DefaultFileHashCacheTest {
   }
 
   @Test
+  public void invalidateCollectionRemovesAll() throws IOException {
+    ProjectFilesystem filesystem = new FakeProjectFilesystem();
+    DefaultFileHashCache cache =
+        DefaultFileHashCache.createDefaultFileHashCache(filesystem, fileHashCacheMode);
+    Path path1 = Paths.get("a.txt");
+    Path path2 = Paths.get("b.txt");
+    filesystem.writeContentsToPath("data1", path1);
+    filesystem.writeContentsToPath("data2", path2);
+    cache.get(path1);
+    cache.get(path2);
+    assertTrue(cache.getIfPresent(path1).isPresent());
+    assertTrue(cache.getIfPresent(path2).isPresent());
+    cache.invalidateAll(ImmutableList.of(path1, path2));
+    assertFalse(cache.getIfPresent(path1).isPresent());
+    assertFalse(cache.getIfPresent(path2).isPresent());
+  }
+
+  @Test
+  public void boundedCacheEvictsLeastRecentlyUsedEntry() throws IOException {
+    Assume.assumeTrue(fileHashCacheMode == FileHashCacheMode.LOADING_CACHE);
+    ProjectFilesystem filesystem = new FakeProjectFilesystem();
+    DefaultFileHashCache cache =
+        DefaultFileHashCache.createBoundedFileHashCache(filesystem, fileHashCacheMode, 2);
+    Path p1 = Paths.get("p1");
+    Path p2 = Paths.get("p2");
+    Path p3 = Paths.get("p3");
+    filesystem.writeContentsToPath("1", p1);
+    filesystem.writeContentsToPath("2", p2);
+    filesystem.writeContentsToPath("3", p3);
+    cache.get(p1);
+    cache.get(p2);
+    cache.get(p1); // make p1 most recently used
+    cache.get(p3); // should evict p2
+    assertTrue(cache.getIfPresent(p1).isPresent());
+    assertTrue(cache.getIfPresent(p3).isPresent());
+    assertFalse(cache.getIfPresent(p2).isPresent());
+  }
+
+  @Test
   public void whenDirectoryIsPutThenInvalidatedCacheDoesNotContainPathOrChildren()
       throws IOException {
     ProjectFilesystem filesystem = new FakeProjectFilesystem();

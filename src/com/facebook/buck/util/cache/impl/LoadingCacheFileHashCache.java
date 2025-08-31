@@ -42,34 +42,60 @@ import java.util.concurrent.ExecutionException;
 
 class LoadingCacheFileHashCache implements FileHashCacheEngine {
 
+  /**
+   * Type of references used to store cached values. {@link #SOFT} allows the JVM to reclaim
+   * entries under memory pressure while {@link #WEAK} makes entries eligible for reclamation as
+   * soon as they become weakly reachable.
+   */
+  public enum ValueType {
+    STRONG,
+    SOFT,
+    WEAK
+  }
+
   private final LoadingCache<Path, HashCodeAndFileType> loadingCache;
   private final LoadingCache<Path, Long> sizeCache;
   private final Map<Path, Set<Path>> parentToChildCache = new ConcurrentHashMap<>();
 
   private LoadingCacheFileHashCache(
-      ValueLoader<HashCodeAndFileType> hashLoader, ValueLoader<Long> sizeLoader) {
+      ValueLoader<HashCodeAndFileType> hashLoader,
+      ValueLoader<Long> sizeLoader,
+      long maxEntries,
+      ValueType valueType) {
+    CacheBuilder<Object, Object> hashBuilder = CacheBuilder.newBuilder();
+    CacheBuilder<Object, Object> sizeBuilder = CacheBuilder.newBuilder();
+    if (maxEntries > 0 && maxEntries < Long.MAX_VALUE) {
+      hashBuilder = hashBuilder.maximumSize(maxEntries);
+      sizeBuilder = sizeBuilder.maximumSize(maxEntries);
+    }
+    if (valueType == ValueType.SOFT) {
+      hashBuilder = hashBuilder.softValues();
+      sizeBuilder = sizeBuilder.softValues();
+    } else if (valueType == ValueType.WEAK) {
+      hashBuilder = hashBuilder.weakValues();
+      sizeBuilder = sizeBuilder.weakValues();
+    }
+
     loadingCache =
-        CacheBuilder.newBuilder()
-            .build(
-                new CacheLoader<Path, HashCodeAndFileType>() {
-                  @Override
-                  public HashCodeAndFileType load(Path path) {
-                    HashCodeAndFileType hashCodeAndFileType = hashLoader.load(path);
-                    updateParent(path);
-                    return hashCodeAndFileType;
-                  }
-                });
+        hashBuilder.build(
+            new CacheLoader<Path, HashCodeAndFileType>() {
+              @Override
+              public HashCodeAndFileType load(Path path) {
+                HashCodeAndFileType hashCodeAndFileType = hashLoader.load(path);
+                updateParent(path);
+                return hashCodeAndFileType;
+              }
+            });
     sizeCache =
-        CacheBuilder.newBuilder()
-            .build(
-                new CacheLoader<Path, Long>() {
-                  @Override
-                  public Long load(Path path) {
-                    long size = sizeLoader.load(path);
-                    updateParent(path);
-                    return size;
-                  }
-                });
+        sizeBuilder.build(
+            new CacheLoader<Path, Long>() {
+              @Override
+              public Long load(Path path) {
+                long size = sizeLoader.load(path);
+                updateParent(path);
+                return size;
+              }
+            });
   }
 
   private void updateParent(Path path) {
@@ -84,7 +110,27 @@ class LoadingCacheFileHashCache implements FileHashCacheEngine {
   public static FileHashCacheEngine createWithStats(
       ValueLoader<HashCodeAndFileType> hashLoader, ValueLoader<Long> sizeLoader) {
     return new StatsTrackingFileHashCacheEngine(
-        new LoadingCacheFileHashCache(hashLoader, sizeLoader), "old");
+        new LoadingCacheFileHashCache(hashLoader, sizeLoader, Long.MAX_VALUE, ValueType.STRONG),
+        "old");
+  }
+
+  public static FileHashCacheEngine createWithStats(
+      ValueLoader<HashCodeAndFileType> hashLoader,
+      ValueLoader<Long> sizeLoader,
+      long maxEntries) {
+    return new StatsTrackingFileHashCacheEngine(
+        new LoadingCacheFileHashCache(hashLoader, sizeLoader, maxEntries, ValueType.STRONG),
+        "old");
+  }
+
+  public static FileHashCacheEngine createWithDiscardableValues(
+      ValueLoader<HashCodeAndFileType> hashLoader,
+      ValueLoader<Long> sizeLoader,
+      long maxEntries,
+      boolean useWeakReferences) {
+    ValueType valueType = useWeakReferences ? ValueType.WEAK : ValueType.SOFT;
+    return new StatsTrackingFileHashCacheEngine(
+        new LoadingCacheFileHashCache(hashLoader, sizeLoader, maxEntries, valueType), "old");
   }
 
   @Override
