@@ -60,6 +60,15 @@ public class DefaultFileHashCache implements ProjectFileHashCache {
   protected DefaultFileHashCache(
       ProjectFilesystem projectFilesystem,
       Predicate<Path> ignoredPredicate,
+      FileHashCacheEngine engine) {
+    this.projectFilesystem = projectFilesystem;
+    this.ignoredPredicate = ignoredPredicate;
+    this.fileHashCacheEngine = engine;
+  }
+
+  protected DefaultFileHashCache(
+      ProjectFilesystem projectFilesystem,
+      Predicate<Path> ignoredPredicate,
       FileHashCacheMode fileHashCacheMode) {
     this.projectFilesystem = projectFilesystem;
     this.ignoredPredicate = ignoredPredicate;
@@ -142,6 +151,58 @@ public class DefaultFileHashCache implements ProjectFileHashCache {
       ProjectFilesystem projectFilesystem, FileHashCacheMode fileHashCacheMode) {
     return new DefaultFileHashCache(
         projectFilesystem, getDefaultPathPredicate(projectFilesystem), fileHashCacheMode);
+  }
+
+  public static DefaultFileHashCache createBoundedFileHashCache(
+      ProjectFilesystem projectFilesystem, int maxEntries) {
+    DefaultFileHashCache cache =
+        new DefaultFileHashCache(
+            projectFilesystem, getDefaultPathPredicate(projectFilesystem), FileHashCacheMode.LOADING_CACHE);
+    FileHashCacheEngine.ValueLoader<HashCodeAndFileType> hashLoader =
+        path -> {
+          try {
+            return cache.getHashCodeAndFileType(path);
+          } catch (IOException e) {
+            throw new RuntimeException(e);
+          }
+        };
+    FileHashCacheEngine.ValueLoader<Long> sizeLoader =
+        path -> {
+          try {
+            return cache.getPathSize(path);
+          } catch (IOException e) {
+            throw new RuntimeException(e);
+          }
+        };
+    cache.fileHashCacheEngine =
+        LoadingCacheFileHashCache.createBounded(hashLoader, sizeLoader, maxEntries);
+    return cache;
+  }
+
+  public static DefaultFileHashCache createMemorySensitiveFileHashCache(
+      ProjectFilesystem projectFilesystem, int maxEntries) {
+    DefaultFileHashCache cache =
+        new DefaultFileHashCache(
+            projectFilesystem, getDefaultPathPredicate(projectFilesystem), FileHashCacheMode.LOADING_CACHE);
+    FileHashCacheEngine.ValueLoader<HashCodeAndFileType> hashLoader =
+        path -> {
+          try {
+            return cache.getHashCodeAndFileType(path);
+          } catch (IOException e) {
+            throw new RuntimeException(e);
+          }
+        };
+    FileHashCacheEngine.ValueLoader<Long> sizeLoader =
+        path -> {
+          try {
+            return cache.getPathSize(path);
+          } catch (IOException e) {
+            throw new RuntimeException(e);
+          }
+        };
+    cache.fileHashCacheEngine =
+        LoadingCacheFileHashCache.createMemorySensitive(hashLoader, sizeLoader, maxEntries);
+    return cache;
   }
 
   /**
@@ -257,6 +318,12 @@ public class DefaultFileHashCache implements ProjectFileHashCache {
   @Override
   public void invalidateAll() {
     fileHashCacheEngine.invalidateAll();
+  }
+
+  public synchronized void invalidateAll(Iterable<Path> paths) {
+    for (Path path : paths) {
+      fileHashCacheEngine.invalidateWithParents(path);
+    }
   }
 
   /** @return The {@link com.google.common.hash.HashCode} of the contents of path. */
