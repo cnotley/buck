@@ -61,6 +61,15 @@ public class DefaultFileHashCache implements ProjectFileHashCache {
       ProjectFilesystem projectFilesystem,
       Predicate<Path> ignoredPredicate,
       FileHashCacheMode fileHashCacheMode) {
+    this(projectFilesystem, ignoredPredicate, fileHashCacheMode, Long.MAX_VALUE, null);
+  }
+
+  protected DefaultFileHashCache(
+      ProjectFilesystem projectFilesystem,
+      Predicate<Path> ignoredPredicate,
+      FileHashCacheMode fileHashCacheMode,
+      long maxEntries,
+      LoadingCacheFileHashCache.ValueType valueType) {
     this.projectFilesystem = projectFilesystem;
     this.ignoredPredicate = ignoredPredicate;
     FileHashCacheEngine.ValueLoader<HashCodeAndFileType> hashLoader =
@@ -103,7 +112,14 @@ public class DefaultFileHashCache implements ProjectFileHashCache {
         fileHashCacheEngine = new ComboFileHashCache(hashLoader, sizeLoader, projectFilesystem);
         break;
       case LOADING_CACHE:
-        fileHashCacheEngine = LoadingCacheFileHashCache.createWithStats(hashLoader, sizeLoader);
+        if (valueType == null) {
+          fileHashCacheEngine =
+              LoadingCacheFileHashCache.createWithStats(hashLoader, sizeLoader, maxEntries);
+        } else {
+          fileHashCacheEngine =
+              LoadingCacheFileHashCache.createWithDiscardableValues(
+                  hashLoader, sizeLoader, maxEntries, valueType == LoadingCacheFileHashCache.ValueType.WEAK);
+        }
         break;
       case PREFIX_TREE:
         fileHashCacheEngine =
@@ -119,7 +135,7 @@ public class DefaultFileHashCache implements ProjectFileHashCache {
       case LIMITED_PREFIX_TREE_PARALLEL:
         fileHashCacheEngine =
             new ComboFileHashCache(
-                LoadingCacheFileHashCache.createWithStats(hashLoader, sizeLoader),
+                LoadingCacheFileHashCache.createWithStats(hashLoader, sizeLoader, maxEntries),
                 new StatsTrackingFileHashCacheEngine(
                     new LimitedFileHashCacheEngine(
                         projectFilesystem, fileHashLoader, dirHashLoader, sizeLoader),
@@ -142,6 +158,33 @@ public class DefaultFileHashCache implements ProjectFileHashCache {
       ProjectFilesystem projectFilesystem, FileHashCacheMode fileHashCacheMode) {
     return new DefaultFileHashCache(
         projectFilesystem, getDefaultPathPredicate(projectFilesystem), fileHashCacheMode);
+  }
+
+  public static DefaultFileHashCache createBoundedFileHashCache(
+      ProjectFilesystem projectFilesystem, FileHashCacheMode fileHashCacheMode, long maxEntries) {
+    return new DefaultFileHashCache(
+        projectFilesystem,
+        getDefaultPathPredicate(projectFilesystem),
+        fileHashCacheMode,
+        maxEntries,
+        LoadingCacheFileHashCache.ValueType.STRONG);
+  }
+
+  public static DefaultFileHashCache createMemorySensitiveFileHashCache(
+      ProjectFilesystem projectFilesystem,
+      FileHashCacheMode fileHashCacheMode,
+      long maxEntries,
+      boolean aggressiveReclaim) {
+    LoadingCacheFileHashCache.ValueType valueType =
+        aggressiveReclaim
+            ? LoadingCacheFileHashCache.ValueType.WEAK
+            : LoadingCacheFileHashCache.ValueType.SOFT;
+    return new DefaultFileHashCache(
+        projectFilesystem,
+        getDefaultPathPredicate(projectFilesystem),
+        fileHashCacheMode,
+        maxEntries,
+        valueType);
   }
 
   /**
@@ -257,6 +300,16 @@ public class DefaultFileHashCache implements ProjectFileHashCache {
   @Override
   public void invalidateAll() {
     fileHashCacheEngine.invalidateAll();
+  }
+
+  public void invalidateAll(Iterable<Path> relativePaths) {
+    synchronized (this) {
+      for (Path path : relativePaths) {
+        Preconditions.checkArgument(!path.isAbsolute());
+        checkNotIgnored(path);
+        fileHashCacheEngine.invalidate(path);
+      }
+    }
   }
 
   /** @return The {@link com.google.common.hash.HashCode} of the contents of path. */
