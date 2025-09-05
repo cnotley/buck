@@ -311,8 +311,8 @@ public abstract class AbstractPerfCommand<CommandContext> extends AbstractComman
     ProjectFilesystem hashFakingFilesystem = createHashFakingFilesystem(realFilesystem);
 
     return Stream.of(
-        DefaultFileHashCache.createBuckOutFileHashCache(hashFakingFilesystem, cacheMode),
-        DefaultFileHashCache.createDefaultFileHashCache(hashFakingFilesystem, cacheMode));
+        DefaultFileHashCache.createBuckOutFileHashCache(hashFakingFilesystem, cacheMode, 0L),
+        DefaultFileHashCache.createDefaultFileHashCache(hashFakingFilesystem, cacheMode, 0L));
   }
 
   private DefaultProjectFilesystem createHashFakingFilesystem(ProjectFilesystem realFilesystem) {

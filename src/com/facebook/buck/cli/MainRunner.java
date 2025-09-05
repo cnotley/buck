@@ -926,7 +926,9 @@ public final class MainRunner {
                 if (cell.getCanonicalName() != CanonicalCellName.rootCell()) {
                   allCaches.add(
                       DefaultFileHashCache.createBuckOutFileHashCache(
-                          cell.getFilesystem(), buildBuckConfig.getFileHashCacheMode()));
+                          cell.getFilesystem(),
+                          buildBuckConfig.getFileHashCacheMode(),
+                          buildBuckConfig.getFileHashCacheMaximumEntries().orElse(0L)));
                 }
               });
 
@@ -935,7 +937,9 @@ public final class MainRunner {
       // times in a single run.
       allCaches.add(
           DefaultFileHashCache.createDefaultFileHashCache(
-              rootCellProjectFilesystem, buildBuckConfig.getFileHashCacheMode()));
+              rootCellProjectFilesystem,
+              buildBuckConfig.getFileHashCacheMode(),
+              buildBuckConfig.getFileHashCacheMaximumEntries().orElse(0L)));
       allCaches.addAll(
           DefaultFileHashCache.createOsRootDirectoriesCaches(
               projectFilesystemFactory, buildBuckConfig.getFileHashCacheMode()));

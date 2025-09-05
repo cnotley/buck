@@ -70,7 +70,7 @@ public class WatchedFileHashCacheTest {
   @Test
   public void whenNotifiedOfOverflowEventCacheIsCleared() throws IOException {
     ProjectFilesystem filesystem = new FakeProjectFilesystem();
-    WatchedFileHashCache cache = new WatchedFileHashCache(filesystem, fileHashCacheMode);
+    WatchedFileHashCache cache = new WatchedFileHashCache(filesystem, fileHashCacheMode, 0L);
     Path path = new File("SomeClass.java").toPath();
     filesystem.touch(path);
 
@@ -89,7 +89,7 @@ public class WatchedFileHashCacheTest {
   @Test
   public void whenNotifiedOfCreateEventCacheEntryIsRemoved() throws IOException {
     ProjectFilesystem filesystem = new FakeProjectFilesystem();
-    WatchedFileHashCache cache = new WatchedFileHashCache(filesystem, fileHashCacheMode);
+    WatchedFileHashCache cache = new WatchedFileHashCache(filesystem, fileHashCacheMode, 0L);
     Path path = Paths.get("SomeClass.java");
     filesystem.touch(path);
 

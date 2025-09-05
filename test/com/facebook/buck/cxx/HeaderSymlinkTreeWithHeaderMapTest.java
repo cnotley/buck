@@ -174,7 +174,8 @@ public class HeaderSymlinkTreeWithHeaderMapTest {
     DefaultFileHashCache hashCache =
         DefaultFileHashCache.createDefaultFileHashCache(
             TestProjectFilesystems.createProjectFilesystem(tmpDir.getRoot()),
-            FileHashCacheMode.DEFAULT);
+            FileHashCacheMode.DEFAULT,
+            0L);
     FileHashLoader hashLoader = new StackedFileHashCache(ImmutableList.of(hashCache));
     RuleKey key1 =
         new TestDefaultRuleKeyFactory(hashLoader, graphBuilder).build(symlinkTreeBuildRule);
@@ -190,7 +191,8 @@ public class HeaderSymlinkTreeWithHeaderMapTest {
     DefaultFileHashCache hashCache =
         DefaultFileHashCache.createDefaultFileHashCache(
             TestProjectFilesystems.createProjectFilesystem(tmpDir.getRoot()),
-            FileHashCacheMode.DEFAULT);
+            FileHashCacheMode.DEFAULT,
+            0L);
     FileHashLoader hashLoader = new StackedFileHashCache(ImmutableList.of(hashCache));
     DefaultRuleKeyFactory ruleKeyFactory = new TestDefaultRuleKeyFactory(hashLoader, graphBuilder);
 

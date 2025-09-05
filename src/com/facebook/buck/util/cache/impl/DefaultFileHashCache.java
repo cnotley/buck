@@ -60,7 +60,8 @@ public class DefaultFileHashCache implements ProjectFileHashCache {
   protected DefaultFileHashCache(
       ProjectFilesystem projectFilesystem,
       Predicate<Path> ignoredPredicate,
-      FileHashCacheMode fileHashCacheMode) {
+      FileHashCacheMode fileHashCacheMode,
+      long maxEntries) {
     this.projectFilesystem = projectFilesystem;
     this.ignoredPredicate = ignoredPredicate;
     FileHashCacheEngine.ValueLoader<HashCodeAndFileType> hashLoader =
@@ -103,7 +104,8 @@ public class DefaultFileHashCache implements ProjectFileHashCache {
         fileHashCacheEngine = new ComboFileHashCache(hashLoader, sizeLoader, projectFilesystem);
         break;
       case LOADING_CACHE:
-        fileHashCacheEngine = LoadingCacheFileHashCache.createWithStats(hashLoader, sizeLoader);
+        fileHashCacheEngine =
+            LoadingCacheFileHashCache.createWithStats(hashLoader, sizeLoader, maxEntries);
         break;
       case PREFIX_TREE:
         fileHashCacheEngine =
@@ -131,17 +133,40 @@ public class DefaultFileHashCache implements ProjectFileHashCache {
   }
 
   public static DefaultFileHashCache createBuckOutFileHashCache(
-      ProjectFilesystem projectFilesystem, FileHashCacheMode fileHashCacheMode) {
+      ProjectFilesystem projectFilesystem,
+      FileHashCacheMode fileHashCacheMode,
+      long maxEntries) {
     return new DefaultFileHashCache(
         projectFilesystem.createBuckOutProjectFilesystem(),
         (path) -> !isInBuckOut(projectFilesystem, path),
-        fileHashCacheMode);
+        fileHashCacheMode,
+        maxEntries);
+  }
+
+  /**
+   * Overload of {@link #createBuckOutFileHashCache(ProjectFilesystem, FileHashCacheMode, long)}
+   * that uses an unbounded cache.
+   */
+  public static DefaultFileHashCache createBuckOutFileHashCache(
+      ProjectFilesystem projectFilesystem, FileHashCacheMode fileHashCacheMode) {
+    return createBuckOutFileHashCache(projectFilesystem, fileHashCacheMode, 0L);
   }
 
   public static DefaultFileHashCache createDefaultFileHashCache(
-      ProjectFilesystem projectFilesystem, FileHashCacheMode fileHashCacheMode) {
+      ProjectFilesystem projectFilesystem,
+      FileHashCacheMode fileHashCacheMode,
+      long maxEntries) {
     return new DefaultFileHashCache(
-        projectFilesystem, getDefaultPathPredicate(projectFilesystem), fileHashCacheMode);
+        projectFilesystem, getDefaultPathPredicate(projectFilesystem), fileHashCacheMode, maxEntries);
+  }
+
+  /**
+   * Overload of {@link #createDefaultFileHashCache(ProjectFilesystem, FileHashCacheMode, long)}
+   * that uses an unbounded cache.
+   */
+  public static DefaultFileHashCache createDefaultFileHashCache(
+      ProjectFilesystem projectFilesystem, FileHashCacheMode fileHashCacheMode) {
+    return createDefaultFileHashCache(projectFilesystem, fileHashCacheMode, 0L);
   }
 
   /**
@@ -188,7 +213,8 @@ public class DefaultFileHashCache implements ProjectFileHashCache {
       // rules (e.g. /usr/bin/gcc), and only serves to prevent rehashing the same file
       // multiple times in a single run.
       allCaches.add(
-          DefaultFileHashCache.createDefaultFileHashCache(projectFilesystem, fileHashCacheMode));
+          DefaultFileHashCache.createDefaultFileHashCache(
+              projectFilesystem, fileHashCacheMode, 0L));
     }
 
     return allCaches.build();

@@ -36,6 +36,17 @@ public interface FileHashCache extends FileHashLoader {
 
   void invalidateAll();
 
+  /**
+   * Invalidate the cached hash entries for the given collection of paths as a single cohesive
+   * operation. By default, this iterates over the provided paths and invalidates each, but
+   * implementations may override to support more efficient batch invalidations.
+   */
+  default void invalidateAll(Iterable<? extends Path> paths) {
+    for (Path path : paths) {
+      invalidate(path);
+    }
+  }
+
   void set(Path path, HashCode hashCode) throws IOException;
 
   /**

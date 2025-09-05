@@ -30,8 +30,18 @@ public class WatchedFileHashCache extends DefaultFileHashCache {
   private static final Logger LOG = Logger.get(WatchedFileHashCache.class);
 
   public WatchedFileHashCache(
-      ProjectFilesystem projectFilesystem, FileHashCacheMode fileHashCacheMode) {
-    super(projectFilesystem, getDefaultPathPredicate(projectFilesystem), fileHashCacheMode);
+      ProjectFilesystem projectFilesystem,
+      FileHashCacheMode fileHashCacheMode,
+      long maxEntries) {
+    super(projectFilesystem, getDefaultPathPredicate(projectFilesystem), fileHashCacheMode, maxEntries);
+  }
+
+  /**
+   * Overload of {@link #WatchedFileHashCache(ProjectFilesystem, FileHashCacheMode, long)} that
+   * uses an unbounded cache.
+   */
+  public WatchedFileHashCache(ProjectFilesystem projectFilesystem, FileHashCacheMode fileHashCacheMode) {
+    this(projectFilesystem, fileHashCacheMode, 0L);
   }
 
   /**

@@ -81,7 +81,7 @@ public class DefaultFileHashCacheTest {
     filesystem.touch(path);
 
     DefaultFileHashCache cache =
-        DefaultFileHashCache.createDefaultFileHashCache(filesystem, fileHashCacheMode);
+        DefaultFileHashCache.createDefaultFileHashCache(filesystem, fileHashCacheMode, 0L);
     HashCodeAndFileType value = HashCodeAndFileType.ofFile(HashCode.fromInt(42));
     cache.fileHashCacheEngine.put(path, value);
     assertTrue("Cache should contain path", cache.getIfPresent(path).isPresent());
@@ -94,7 +94,7 @@ public class DefaultFileHashCacheTest {
     filesystem.touch(path);
 
     DefaultFileHashCache cache =
-        DefaultFileHashCache.createDefaultFileHashCache(filesystem, fileHashCacheMode);
+        DefaultFileHashCache.createDefaultFileHashCache(filesystem, fileHashCacheMode, 0L);
     HashCodeAndFileType value = HashCodeAndFileType.ofFile(HashCode.fromInt(42));
     cache.fileHashCacheEngine.put(path, value);
     assertEquals("Cache should contain hash", value.getHashCode(), cache.get(path));
@@ -107,7 +107,7 @@ public class DefaultFileHashCacheTest {
     filesystem.touch(path);
 
     DefaultFileHashCache cache =
-        DefaultFileHashCache.createDefaultFileHashCache(filesystem, fileHashCacheMode);
+        DefaultFileHashCache.createDefaultFileHashCache(filesystem, fileHashCacheMode, 0L);
     HashCodeAndFileType value = HashCodeAndFileType.ofFile(HashCode.fromInt(42));
     cache.fileHashCacheEngine.put(path, value);
     assertTrue("Cache should contain path", cache.getIfPresent(path).isPresent());
@@ -120,7 +120,7 @@ public class DefaultFileHashCacheTest {
   public void invalidatingNonExistentEntryDoesNotThrow() {
     ProjectFilesystem filesystem = new FakeProjectFilesystem();
     DefaultFileHashCache cache =
-        DefaultFileHashCache.createDefaultFileHashCache(filesystem, fileHashCacheMode);
+        DefaultFileHashCache.createDefaultFileHashCache(filesystem, fileHashCacheMode, 0L);
     Path path = new File("SomeClass.java").toPath();
     assertFalse("Cache should not contain pain", cache.getIfPresent(path).isPresent());
     cache.invalidate(path);
@@ -131,7 +131,7 @@ public class DefaultFileHashCacheTest {
   public void getMissingPathThrows() throws IOException {
     ProjectFilesystem filesystem = new FakeProjectFilesystem();
     DefaultFileHashCache cache =
-        DefaultFileHashCache.createDefaultFileHashCache(filesystem, fileHashCacheMode);
+        DefaultFileHashCache.createDefaultFileHashCache(filesystem, fileHashCacheMode, 0L);
     expectedException.expect(RuntimeException.class);
     cache.get(filesystem.getPath("hello.java"));
   }

@@ -43,6 +43,17 @@ public interface FileHashCacheEngine {
 
   void invalidateWithParents(Path path);
 
+  /**
+   * Invalidate the cached hash entries for the given collection of paths.
+   * By default, this just iterates over the provided paths and calls {@link #invalidate(Path)},
+   * but engine implementations may override to perform more efficient invalidations.
+   */
+  default void invalidateAll(Iterable<? extends Path> paths) {
+    for (Path path : paths) {
+      invalidate(path);
+    }
+  }
+
   HashCode get(Path path) throws IOException;
 
   HashCode getForArchiveMember(Path archiveRelativePath, Path memberPath) throws IOException;

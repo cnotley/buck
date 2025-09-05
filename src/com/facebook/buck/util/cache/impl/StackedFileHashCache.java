@@ -90,8 +90,8 @@ public class StackedFileHashCache implements FileHashCache {
       ProjectFilesystem filesystem, FileHashCacheMode fileHashCacheMode) {
     return new StackedFileHashCache(
         ImmutableList.of(
-            DefaultFileHashCache.createDefaultFileHashCache(filesystem, fileHashCacheMode),
-            DefaultFileHashCache.createBuckOutFileHashCache(filesystem, fileHashCacheMode)));
+            DefaultFileHashCache.createDefaultFileHashCache(filesystem, fileHashCacheMode, 0L),
+            DefaultFileHashCache.createBuckOutFileHashCache(filesystem, fileHashCacheMode, 0L)));
   }
 
   /**

@@ -43,6 +43,17 @@ public interface ProjectFileHashCache extends ProjectFileHashLoader {
 
   void invalidateAll();
 
+  /**
+   * Invalidate a collection of relative paths as a single operation. Defaults to invalidating each
+   * path individually; callers that must bulk invalidate many paths may prefer to use this to
+   * express their intent.
+   */
+  default void invalidateAll(Iterable<? extends Path> paths) {
+    for (Path path : paths) {
+      invalidate(path);
+    }
+  }
+
   void set(Path path, HashCode hashCode) throws IOException;
 
   default FileHashCache.FileHashCacheVerificationResult verify() throws IOException {

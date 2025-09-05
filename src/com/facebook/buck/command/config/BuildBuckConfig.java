@@ -251,6 +251,15 @@ public abstract class BuildBuckConfig implements ConfigView<BuckConfig> {
         .orElse(FileHashCacheMode.DEFAULT);
   }
 
+  /**
+   * @return optional maximum number of entries to hold in the file hash cache. If absent, the
+   *     cache will be unbounded.
+   */
+  @Value.Lazy
+  public java.util.Optional<Long> getFileHashCacheMaximumEntries() {
+    return getDelegate().getLong("build", "file_hash_cache_max_entries");
+  }
+
   @Value.Lazy
   public boolean shouldBuckOutIncludeTargetConfigHash() {
     return getDelegate()
