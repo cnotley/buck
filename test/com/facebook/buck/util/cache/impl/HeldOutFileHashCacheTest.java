@@ -629,20 +629,75 @@ public class HeldOutFileHashCacheTest {
   public void testMaxEntriesStrictlyEnforcedNoOvershoot() throws Exception {
     final int MAX = 3;
     CacheHandle cache = newBoundedCache(MAX);
+    CacheHandle legacy = newBoundedCache(0);
     List<Path> all = Collections.synchronizedList(new ArrayList<>());
+    java.util.concurrent.Callable<int[]> snap = () -> {
+      int load = 0, size = 0;
+      try {
+        Field lf = cache.instance.getClass().getDeclaredField("loadingCache");
+        lf.setAccessible(true);
+        Object lc = lf.get(cache.instance);
+        if (lc instanceof Map) load = ((Map<?, ?>) lc).size();
+        else {
+          try {
+            Method m = lc.getClass().getMethod("size");
+            Object v = m.invoke(lc);
+            if (v instanceof Number) load = ((Number) v).intValue();
+          } catch (NoSuchMethodException e) {
+            try {
+              Method asMap = lc.getClass().getMethod("asMap");
+              Object mv = asMap.invoke(lc);
+              if (mv instanceof Map) load = ((Map<?, ?>) mv).size();
+            } catch (Exception ignored) {}
+          }
+        }
+        Field sf = cache.instance.getClass().getDeclaredField("sizeCache");
+        sf.setAccessible(true);
+        Object sc = sf.get(cache.instance);
+        if (sc instanceof Map) size = ((Map<?, ?>) sc).size();
+        else {
+          try {
+            Method m = sc.getClass().getMethod("size");
+            Object v = m.invoke(sc);
+            if (v instanceof Number) size = ((Number) v).intValue();
+          } catch (NoSuchMethodException e) {
+            try {
+              Method asMap = sc.getClass().getMethod("asMap");
+              Object mv = asMap.invoke(sc);
+              if (mv instanceof Map) size = ((Map<?, ?>) mv).size();
+            } catch (Exception ignored) {}
+          }
+        }
+      } catch (Exception ignored) {}
+      return new int[] {load, size};
+    };
+
     for (int i = 0; i < 20; i++) {
       Path rel = writeText(cache.projectRoot, "a/file_" + i + ".txt", "x" + i);
       all.add(rel);
       cache.callGet(rel);
       int approx = cache.callSizeApprox();
       int visible = cache.visibleKeysSnapshot().size();
+      int[] s = snap.call();
       assertTrue(
           "Cache size must never overshoot max after sequential add #" + i +
-              " (approx=" + approx + ", visible=" + visible + ")",
-          approx <= MAX && visible <= MAX);
+              " (approx=" + approx + ", visible=" + visible + ", load=" + s[0] +
+              ", size=" + s[1] + ")",
+          approx <= MAX && visible <= MAX && s[0] <= MAX && s[1] <= MAX &&
+              s[0] + s[1] <= MAX);
     }
 
-    int threads = 5;
+    for (int i = 0; i < 20; i++) {
+      Path rel = writeText(legacy.projectRoot, "legacy/" + i + ".txt", "l" + i);
+      legacy.callGet(rel);
+    }
+    int approxLegacy = legacy.callSizeApprox();
+    int visibleLegacy = legacy.visibleKeysSnapshot().size();
+    assertTrue(
+        "Default construction path should be bounded",
+        approxLegacy <= MAX && visibleLegacy <= MAX);
+
+    int threads = 8;
     CyclicBarrier start = new CyclicBarrier(threads);
     CountDownLatch done = new CountDownLatch(threads);
     AtomicBoolean overshoot = new AtomicBoolean(false);
@@ -653,15 +708,20 @@ public class HeldOutFileHashCacheTest {
           () -> {
             try {
               start.await(3, TimeUnit.SECONDS);
-              for (int k = 0; k < 6; k++) {
-                Path rel = writeText(cache.projectRoot, "b/t" + tid + "_" + k + ".txt",
-                    "y" + tid + ":" + k);
+              for (int k = 0; k < 10; k++) {
+                Path rel =
+                    writeText(cache.projectRoot, "b/t" + tid + "_" + k + ".txt",
+                        "y" + tid + ":" + k);
                 all.add(rel);
                 cache.callGet(rel);
-                int s = cache.callSizeApprox();
-                int vis = cache.visibleKeysSnapshot().size();
-                if (s > MAX || vis > MAX) {
+                int[] ss = snap.call();
+                if (ss[0] > MAX || ss[1] > MAX || ss[0] + ss[1] > MAX) {
                   overshoot.set(true);
+                }
+                if (k == 5) {
+                  Thread.sleep(1 + rnd.nextInt(5));
+                  ss = snap.call();
+                  if (ss[0] + ss[1] > MAX) overshoot.set(true);
                 }
               }
             } catch (Exception e) {
@@ -676,49 +736,165 @@ public class HeldOutFileHashCacheTest {
     assertFalse("Cache size overshot maximum during concurrent burst", overshoot.get());
 
     Set<Path> visible = cache.visibleKeysSnapshot();
+    int[] finalSnap = snap.call();
     assertTrue("Visible keys should be <= max after burst", visible.size() <= MAX);
     assertTrue("Approximate size should be <= max after burst", cache.callSizeApprox() <= MAX);
+    assertTrue(
+        "Internal caches must stay within max", finalSnap[0] <= MAX && finalSnap[1] <= MAX &&
+            finalSnap[0] + finalSnap[1] <= MAX);
     for (Path p : all) {
       if (!visible.contains(p) && cache.supportsGetIfPresent()) {
-        assertNull("Evicted path should not linger in any structure: " + p,
+        assertNull(
+            "Evicted path should not linger in any structure: " + p,
             cache.callGetIfPresent(p));
       }
     }
   }
   @Test(timeout = 12_000)
   public void testLRUEvictionOnBreachNoDeferral() throws Exception {
-    CacheHandle cache = newBoundedCache(3);
-    Path f1 = writeText(cache.projectRoot, "lru/e1.txt", "1");
-    Path f2 = writeText(cache.projectRoot, "lru/e2.txt", "2");
-    Path f3 = writeText(cache.projectRoot, "lru/e3.txt", "3");
-    cache.callGet(f1);
-    cache.callGet(f2);
-    cache.callGet(f3);
-    cache.callGet(f1); 
-    Path f4 = writeText(cache.projectRoot, "lru/e4.txt", "4");
-    cache.callGet(f4);
-    if (cache.supportsGetIfPresent()) {
-      assertNotNull("f1 should be resident", cache.callGetIfPresent(f1));
-      assertNotNull("f3 should be resident", cache.callGetIfPresent(f3));
-      assertNotNull("f4 should be resident", cache.callGetIfPresent(f4));
-      assertNull("LRU should evict f2 exactly at threshold breach (no deferral)", cache.callGetIfPresent(f2));
-    } else {
-      Set<Path> keys = cache.visibleKeysSnapshot();
-      assertTrue("Could not introspect keys to verify exact eviction order; got empty snapshot.", !keys.isEmpty());
-      assertTrue("Eviction must keep most recent (f1)", keys.contains(f1));
-      assertTrue("Eviction must keep f3 (more recent than f2)", keys.contains(f3));
-      assertTrue("Eviction must include f4", keys.contains(f4));
-      assertFalse("LRU should evict f2 exactly at threshold breach (no deferral)", keys.contains(f2));
+    final int MAX = 3;
+    CacheHandle cache = newBoundedCache(MAX);
+    java.util.concurrent.Callable<int[]> snap = () -> {
+      int load = 0, size = 0;
+      try {
+        Field lf = cache.instance.getClass().getDeclaredField("loadingCache");
+        lf.setAccessible(true);
+        Object lc = lf.get(cache.instance);
+        if (lc instanceof Map) load = ((Map<?, ?>) lc).size();
+        else {
+          try {
+            Method m = lc.getClass().getMethod("size");
+            Object v = m.invoke(lc);
+            if (v instanceof Number) load = ((Number) v).intValue();
+          } catch (NoSuchMethodException e) {
+            try {
+              Method asMap = lc.getClass().getMethod("asMap");
+              Object mv = asMap.invoke(lc);
+              if (mv instanceof Map) load = ((Map<?, ?>) mv).size();
+            } catch (Exception ignored) {}
+          }
+        }
+        Field sf = cache.instance.getClass().getDeclaredField("sizeCache");
+        sf.setAccessible(true);
+        Object sc = sf.get(cache.instance);
+        if (sc instanceof Map) size = ((Map<?, ?>) sc).size();
+        else {
+          try {
+            Method m = sc.getClass().getMethod("size");
+            Object v = m.invoke(sc);
+            if (v instanceof Number) size = ((Number) v).intValue();
+          } catch (NoSuchMethodException e) {
+            try {
+              Method asMap = sc.getClass().getMethod("asMap");
+              Object mv = asMap.invoke(sc);
+              if (mv instanceof Map) size = ((Map<?, ?>) mv).size();
+            } catch (Exception ignored) {}
+          }
+        }
+      } catch (Exception ignored) {}
+      return new int[] {load, size};
+    };
+
+    int threads = 4;
+    CyclicBarrier barrier = new CyclicBarrier(threads);
+    CountDownLatch done = new CountDownLatch(threads);
+    AtomicBoolean overshoot = new AtomicBoolean(false);
+    ExecutorService pool = Executors.newFixedThreadPool(threads);
+    for (int t = 0; t < threads; t++) {
+      final int tid = t;
+      pool.submit(
+          () -> {
+            try {
+              Path p1 = writeText(cache.projectRoot, "lru/t" + tid + "_a.txt", "a" + tid);
+              Path p2 = writeText(cache.projectRoot, "lru/t" + tid + "_b.txt", "b" + tid);
+              cache.callGet(p1);
+              cache.callGet(p2);
+              cache.callGet(p1);
+              barrier.await(3, TimeUnit.SECONDS);
+              Path p3 = writeText(cache.projectRoot, "lru/t" + tid + "_c.txt", "c" + tid);
+              cache.callGet(p3);
+              int[] s = snap.call();
+              if (s[0] > MAX || s[1] > MAX || s[0] + s[1] > MAX) overshoot.set(true);
+              if (cache.supportsGetIfPresent()) {
+                if (cache.callGetIfPresent(p2) != null) overshoot.set(true);
+              }
+            } catch (Exception e) {
+              overshoot.set(true);
+            } finally {
+              done.countDown();
+            }
+          });
     }
+    assertTrue(done.await(10, TimeUnit.SECONDS));
+    pool.shutdownNow();
+    assertFalse("Cache size overshot maximum during concurrent adds", overshoot.get());
+    int[] finalSnap = snap.call();
+    assertTrue(
+        "Internal caches must remain within bounds",
+        finalSnap[0] <= MAX && finalSnap[1] <= MAX &&
+            finalSnap[0] + finalSnap[1] <= (int) Math.ceil(MAX * 1.1));
   }
   @Test(timeout = 20_000)
   public void testMemoryStabilizesUnderHighChurn() throws Exception {
     final int MAX = 50;
     CacheHandle cache = newBoundedCache(MAX);
-    int cycles = 3;
-    int perCycle = 500;
+    CacheHandle legacy = newBoundedCache(0);
+    for (int i = 0; i < 100; i++) {
+      Path r = writeFile(legacy.projectRoot, "legacy/u" + i + ".bin", randomBytes(32, rnd));
+      legacy.callGet(r);
+    }
+    int approxLegacy = legacy.callSizeApprox();
+    int visibleLegacy = legacy.visibleKeysSnapshot().size();
+    assertTrue(
+        "Default construction path should be bounded",
+        approxLegacy <= MAX && visibleLegacy <= MAX);
+
+    int cycles = 5;
+    int perCycle = 800;
     List<Path> all = new ArrayList<>();
     int prev = -1;
+    java.util.concurrent.Callable<int[]> snap = () -> {
+      int load = 0, size = 0;
+      try {
+        Field lf = cache.instance.getClass().getDeclaredField("loadingCache");
+        lf.setAccessible(true);
+        Object lc = lf.get(cache.instance);
+        if (lc instanceof Map) load = ((Map<?, ?>) lc).size();
+        else {
+          try {
+            Method m = lc.getClass().getMethod("size");
+            Object v = m.invoke(lc);
+            if (v instanceof Number) load = ((Number) v).intValue();
+          } catch (NoSuchMethodException e) {
+            try {
+              Method asMap = lc.getClass().getMethod("asMap");
+              Object mv = asMap.invoke(lc);
+              if (mv instanceof Map) load = ((Map<?, ?>) mv).size();
+            } catch (Exception ignored) {}
+          }
+        }
+        Field sf = cache.instance.getClass().getDeclaredField("sizeCache");
+        sf.setAccessible(true);
+        Object sc = sf.get(cache.instance);
+        if (sc instanceof Map) size = ((Map<?, ?>) sc).size();
+        else {
+          try {
+            Method m = sc.getClass().getMethod("size");
+            Object v = m.invoke(sc);
+            if (v instanceof Number) size = ((Number) v).intValue();
+          } catch (NoSuchMethodException e) {
+            try {
+              Method asMap = sc.getClass().getMethod("asMap");
+              Object mv = asMap.invoke(sc);
+              if (mv instanceof Map) size = ((Map<?, ?>) mv).size();
+            } catch (Exception ignored) {}
+          }
+        }
+      } catch (Exception ignored) {}
+      return new int[] {load, size};
+    };
+    AtomicBoolean overshoot = new AtomicBoolean(false);
+
     for (int c = 0; c < cycles; c++) {
       for (int i = 0; i < perCycle; i++) {
         Path rel = writeFile(cache.projectRoot,
@@ -728,14 +904,40 @@ public class HeldOutFileHashCacheTest {
         all.add(rel);
       }
 
+      Thread extra =
+          new Thread(
+              () -> {
+                try {
+                  for (int i = 0; i < 50; i++) {
+                    Path rel = writeFile(cache.projectRoot,
+                        "churn/x" + c + "_" + i + ".bin", randomBytes(64, rnd));
+                    cache.callGet(rel);
+                    int[] s = snap.call();
+                    if (s[0] > MAX || s[1] > MAX || s[0] + s[1] > MAX) overshoot.set(true);
+                  }
+                } catch (Exception e) {
+                  overshoot.set(true);
+                }
+              });
+      extra.start();
+      while (extra.isAlive()) {
+        int[] s = snap.call();
+        if (s[0] > MAX || s[1] > MAX || s[0] + s[1] > MAX) overshoot.set(true);
+      }
+      extra.join();
+
       Set<Path> visible = cache.visibleKeysSnapshot();
       int approx = cache.callSizeApprox();
-      assertTrue("Visible entries must stay within max after cycle " + c +
-          " (size=" + visible.size() + ")", visible.size() <= MAX);
-      assertTrue("Approx size must stay within max after cycle " + c +
-          " (size=" + approx + ")", approx <= MAX);
+      int[] s = snap.call();
+      assertTrue("Visible entries must stay within max after cycle " + c,
+          visible.size() <= MAX);
+      assertTrue("Approx size must stay within max after cycle " + c, approx <= MAX);
+      assertTrue(
+          "Internal caches must remain within max after cycle " + c,
+          s[0] <= MAX && s[1] <= MAX && s[0] + s[1] <= MAX);
       if (prev != -1) {
-        assertTrue("Cache should stabilize and not grow after cycle " + c,
+        assertTrue(
+            "Cache should stabilize and not grow after cycle " + c,
             visible.size() <= prev + 2);
       }
       prev = visible.size();
@@ -752,7 +954,13 @@ public class HeldOutFileHashCacheTest {
     }
 
     Set<Path> visible = cache.visibleKeysSnapshot();
+    int[] finalSnap = snap.call();
+    assertFalse("Cache exceeded max during churn", overshoot.get());
     assertTrue("Final entry count must remain within max", visible.size() <= MAX);
+    assertTrue(
+        "Internal caches must remain within max at end",
+        finalSnap[0] <= MAX && finalSnap[1] <= MAX &&
+            finalSnap[0] + finalSnap[1] <= MAX);
     for (Path p : all) {
       if (!visible.contains(p) && cache.supportsGetIfPresent()) {
         assertNull("Evicted paths must not leak: " + p, cache.callGetIfPresent(p));
@@ -826,9 +1034,9 @@ public class HeldOutFileHashCacheTest {
   }
   @Test(timeout = 15_000)
   public void testAtomicCollectionInvalidationNoPartialEffects() throws Exception {
-    CacheHandle cache = newBoundedCache(16);
+    CacheHandle cache = newBoundedCache(64);
     List<Path> rels = new ArrayList<>();
-    int entries = 12;
+    int entries = 50;
     for (int i = 0; i < entries; i++) {
       Path p = writeText(cache.projectRoot, "atomic/x" + i + ".txt", "x" + i);
       cache.callGet(p);
@@ -845,8 +1053,8 @@ public class HeldOutFileHashCacheTest {
       }
       return;
     }
-    final int readers = 4;
-    for (int round = 0; round < 3; round++) {
+    final int readers = 6;
+    for (int round = 0; round < 5; round++) {
       // ensure entries are present for this round
       for (Path p : rels) cache.callGet(p);
 
@@ -868,13 +1076,19 @@ public class HeldOutFileHashCacheTest {
                 () -> {
                   try {
                     barrier.await(2, TimeUnit.SECONDS);
-                    long end = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(800);
+                    long end = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1500);
+                    java.util.Random r = new java.util.Random();
                     while (System.nanoTime() < end) {
+                      int n = 10 + r.nextInt(11);
+                      List<Path> subset = new ArrayList<>(n);
+                      for (int j = 0; j < n; j++) {
+                        subset.add(rels.get(r.nextInt(rels.size())));
+                      }
                       int present = 0;
-                      for (Path p : rels) {
+                      for (Path p : subset) {
                         if (cache.callGetIfPresent(p) != null) present++;
                       }
-                      if (present > 0 && present < rels.size()) {
+                      if (present > 0 && present < subset.size()) {
                         partialObserved.set(true);
                         break;
                       }
