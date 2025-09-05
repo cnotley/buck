@@ -627,38 +627,63 @@ public class HeldOutFileHashCacheTest {
   }
   @Test(timeout = 15_000)
   public void testMaxEntriesStrictlyEnforcedNoOvershoot() throws Exception {
-    final int MAX = 5;
+    final int MAX = 3;
     CacheHandle cache = newBoundedCache(MAX);
-    for (int i = 0; i < 12; i++) {
+    List<Path> all = Collections.synchronizedList(new ArrayList<>());
+    for (int i = 0; i < 20; i++) {
       Path rel = writeText(cache.projectRoot, "a/file_" + i + ".txt", "x" + i);
+      all.add(rel);
       cache.callGet(rel);
-      int size = cache.callSizeApprox();
-      assertTrue("Cache size must never overshoot max after add #" + i + " (size=" + size + ")", size <= MAX);
+      int approx = cache.callSizeApprox();
+      int visible = cache.visibleKeysSnapshot().size();
+      assertTrue(
+          "Cache size must never overshoot max after sequential add #" + i +
+              " (approx=" + approx + ", visible=" + visible + ")",
+          approx <= MAX && visible <= MAX);
     }
-    int threads = 8;
+
+    int threads = 5;
     CyclicBarrier start = new CyclicBarrier(threads);
     CountDownLatch done = new CountDownLatch(threads);
     AtomicBoolean overshoot = new AtomicBoolean(false);
     ExecutorService pool = Executors.newFixedThreadPool(threads);
     for (int t = 0; t < threads; t++) {
       final int tid = t;
-      pool.submit(() -> {
-        try {
-          start.await(3, TimeUnit.SECONDS);
-          for (int k = 0; k < 4; k++) {
-            Path rel = writeText(cache.projectRoot, "b/t" + tid + "_" + k + ".txt", "y" + tid + ":" + k);
-            cache.callGet(rel);
-            int s = cache.callSizeApprox();
-            if (s > MAX) overshoot.set(true);
-          }
-        } catch (Exception e) {
-          overshoot.set(true);
-        } finally { done.countDown(); }
-      });
+      pool.submit(
+          () -> {
+            try {
+              start.await(3, TimeUnit.SECONDS);
+              for (int k = 0; k < 6; k++) {
+                Path rel = writeText(cache.projectRoot, "b/t" + tid + "_" + k + ".txt",
+                    "y" + tid + ":" + k);
+                all.add(rel);
+                cache.callGet(rel);
+                int s = cache.callSizeApprox();
+                int vis = cache.visibleKeysSnapshot().size();
+                if (s > MAX || vis > MAX) {
+                  overshoot.set(true);
+                }
+              }
+            } catch (Exception e) {
+              overshoot.set(true);
+            } finally {
+              done.countDown();
+            }
+          });
     }
     assertTrue(done.await(10, TimeUnit.SECONDS));
     pool.shutdownNow();
     assertFalse("Cache size overshot maximum during concurrent burst", overshoot.get());
+
+    Set<Path> visible = cache.visibleKeysSnapshot();
+    assertTrue("Visible keys should be <= max after burst", visible.size() <= MAX);
+    assertTrue("Approximate size should be <= max after burst", cache.callSizeApprox() <= MAX);
+    for (Path p : all) {
+      if (!visible.contains(p) && cache.supportsGetIfPresent()) {
+        assertNull("Evicted path should not linger in any structure: " + p,
+            cache.callGetIfPresent(p));
+      }
+    }
   }
   @Test(timeout = 12_000)
   public void testLRUEvictionOnBreachNoDeferral() throws Exception {
@@ -688,25 +713,51 @@ public class HeldOutFileHashCacheTest {
   }
   @Test(timeout = 20_000)
   public void testMemoryStabilizesUnderHighChurn() throws Exception {
-    final int MAX = 64;
+    final int MAX = 50;
     CacheHandle cache = newBoundedCache(MAX);
-    int N = 1500;
-    for (int i = 0; i < N; i++) {
-      Path rel = writeFile(cache.projectRoot, "churn/" + i + ".bin", randomBytes(512 + rnd.nextInt(1024), rnd));
-      cache.callGet(rel);
-      if (i % 5 == 0 && i > 3) {
-        int j = rnd.nextInt(i);
-        Path rj = cache.projectRoot.relativize(cache.projectRoot.resolve("churn/" + j + ".bin"));
-        cache.callInvalidateOne(rj);
+    int cycles = 3;
+    int perCycle = 500;
+    List<Path> all = new ArrayList<>();
+    int prev = -1;
+    for (int c = 0; c < cycles; c++) {
+      for (int i = 0; i < perCycle; i++) {
+        Path rel = writeFile(cache.projectRoot,
+            "churn/" + c + "_" + i + ".bin",
+            randomBytes(256 + rnd.nextInt(256), rnd));
+        cache.callGet(rel);
+        all.add(rel);
+      }
+
+      Set<Path> visible = cache.visibleKeysSnapshot();
+      int approx = cache.callSizeApprox();
+      assertTrue("Visible entries must stay within max after cycle " + c +
+          " (size=" + visible.size() + ")", visible.size() <= MAX);
+      assertTrue("Approx size must stay within max after cycle " + c +
+          " (size=" + approx + ")", approx <= MAX);
+      if (prev != -1) {
+        assertTrue("Cache should stabilize and not grow after cycle " + c,
+            visible.size() <= prev + 2);
+      }
+      prev = visible.size();
+
+      if (!trySimulateReclamation(cache, 5)) {
+        List<byte[]> allocations = new ArrayList<>();
+        try {
+          for (int i = 0; i < 40; i++) allocations.add(new byte[512 * 1024]);
+        } catch (OutOfMemoryError ignored) {
+          allocations.clear();
+        }
+        forceGcQuietly();
       }
     }
 
-    int sizeNow = cache.callSizeApprox();
-    assertTrue("Entry count must remain <= max after churn, was: " + sizeNow, sizeNow <= MAX);
-
-    cache.callMaintenance();
-    int sizeAfter = cache.callSizeApprox();
-    assertTrue("Entry count exceeds max after maintenance, was: " + sizeAfter, sizeAfter <= MAX);
+    Set<Path> visible = cache.visibleKeysSnapshot();
+    assertTrue("Final entry count must remain within max", visible.size() <= MAX);
+    for (Path p : all) {
+      if (!visible.contains(p) && cache.supportsGetIfPresent()) {
+        assertNull("Evicted paths must not leak: " + p, cache.callGetIfPresent(p));
+      }
+    }
   }
   @Test(timeout = 20_000)
   public void testSelectiveDiscardUnderMemoryPressure() throws Exception {
@@ -777,56 +828,72 @@ public class HeldOutFileHashCacheTest {
   public void testAtomicCollectionInvalidationNoPartialEffects() throws Exception {
     CacheHandle cache = newBoundedCache(16);
     List<Path> rels = new ArrayList<>();
-    for (int i = 0; i < 8; i++) {
+    int entries = 12;
+    for (int i = 0; i < entries; i++) {
       Path p = writeText(cache.projectRoot, "atomic/x" + i + ".txt", "x" + i);
       cache.callGet(p);
       rels.add(p);
     }
     if (!cache.supportsGetIfPresent()) {
-      cache.callInvalidateAll(rels);
-      Set<Path> keys = cache.visibleKeysSnapshot();
-      for (Path p : rels) {
-        assertFalse("All provided keys must be removed by bulk invalidation", keys.contains(p));
+      for (int r = 0; r < 3; r++) {
+        cache.callInvalidateAll(rels);
+        Set<Path> keys = cache.visibleKeysSnapshot();
+        for (Path p : rels) {
+          assertFalse("All provided keys must be removed by bulk invalidation", keys.contains(p));
+        }
+        for (Path p : rels) cache.callGet(p);
       }
       return;
     }
-    CyclicBarrier barrier = new CyclicBarrier(4);
-    AtomicBoolean partialObserved = new AtomicBoolean(false);
-    ExecutorService pool = Executors.newFixedThreadPool(4);
-    Future<?> inv = pool.submit(() -> {
-      try {
-        barrier.await(2, TimeUnit.SECONDS);
-        cache.callInvalidateAll(rels);
-      } catch (Exception e) {
-        throw new RuntimeException(e);
-      }
-    });
-    List<Future<?>> readers = new ArrayList<>();
-    for (int i = 0; i < 3; i++) {
-      readers.add(pool.submit(() -> {
+    final int readers = 4;
+    for (int round = 0; round < 3; round++) {
+      // ensure entries are present for this round
+      for (Path p : rels) cache.callGet(p);
+
+      CyclicBarrier barrier = new CyclicBarrier(readers + 1);
+      AtomicBoolean partialObserved = new AtomicBoolean(false);
+      ExecutorService pool = Executors.newFixedThreadPool(readers + 1);
+      Future<?> inv = pool.submit(() -> {
         try {
           barrier.await(2, TimeUnit.SECONDS);
-          long end = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(800);
-          while (System.nanoTime() < end) {
-            int present = 0;
-            for (Path p : rels) {
-              Object v = cache.callGetIfPresent(p);
-              if (v != null) present++;
-            }
-            if (present > 0 && present < rels.size()) {
-              partialObserved.set(true);
-              break;
-            }
-          }
+          cache.callInvalidateAll(rels);
         } catch (Exception e) {
           throw new RuntimeException(e);
         }
-      }));
+      });
+      List<Future<?>> readersF = new ArrayList<>();
+      for (int i = 0; i < readers; i++) {
+        readersF.add(
+            pool.submit(
+                () -> {
+                  try {
+                    barrier.await(2, TimeUnit.SECONDS);
+                    long end = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(800);
+                    while (System.nanoTime() < end) {
+                      int present = 0;
+                      for (Path p : rels) {
+                        if (cache.callGetIfPresent(p) != null) present++;
+                      }
+                      if (present > 0 && present < rels.size()) {
+                        partialObserved.set(true);
+                        break;
+                      }
+                    }
+                  } catch (Exception e) {
+                    throw new RuntimeException(e);
+                  }
+                }));
+      }
+      inv.get(5, TimeUnit.SECONDS);
+      for (Future<?> f : readersF) f.get(5, TimeUnit.SECONDS);
+      pool.shutdownNow();
+      assertFalse(
+          "Invalidation of a collection must be atomic (no partial visibility)",
+          partialObserved.get());
+      for (Path p : rels) {
+        assertNull("Post invalidation all entries must be absent", cache.callGetIfPresent(p));
+      }
     }
-    inv.get(5, TimeUnit.SECONDS);
-    for (Future<?> f : readers) f.get(5, TimeUnit.SECONDS);
-    pool.shutdownNow();
-    assertFalse("Invalidation of a collection must be atomic (no partial visibility)", partialObserved.get());
   }
 
   @Test(timeout = 25_000)
@@ -1274,35 +1341,79 @@ public class HeldOutFileHashCacheTest {
     assertTrue("Bounded cache should remain around its configured max (<=6), was: " + boundedSize, boundedSize <= 6);
     assertTrue("Memory-sensitive cache should show selective discards", msMisses > 0);
   }
-  @Test(timeout = 10_000)
+  @Test(timeout = 20_000)
   public void testSingleThreadedSpeedNoRegressionHighLimits() throws Exception {
-    CacheHandle cache = newBoundedCache(10_000);
-    for (int i = 0; i < 2000; i++) {
-      Path p = writeText(cache.projectRoot, "perf/s" + i + ".txt", "v");
-      cache.callGet(p);
+    final int ENTRIES = 10_000;
+    CacheHandle unbounded = newBoundedCache(0);
+    List<Path> rels = new ArrayList<>(ENTRIES);
+    for (int i = 0; i < ENTRIES; i++) {
+      Path p = writeText(unbounded.projectRoot, "perf/s" + i + ".txt", "v");
+      unbounded.callGet(p);
+      rels.add(p);
     }
-    long start = System.nanoTime();
-    for (int i = 0; i < 4000; i++) {
-      Path p = Paths.get("perf/s" + (i % 2000) + ".txt");
-      cache.callGet(p);
+    for (int i = 0; i < ENTRIES; i++) {
+      unbounded.callGet(rels.get(rnd.nextInt(ENTRIES)));
     }
-    long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
-    assertTrue("Single-threaded hit path regression (elapsed=" + elapsedMs + "ms)", elapsedMs < 2000);
+    long baselineTotal = 0;
+    for (int r = 0; r < 3; r++) {
+      long start = System.nanoTime();
+      for (int i = 0; i < 20_000; i++) {
+        unbounded.callGet(rels.get(rnd.nextInt(ENTRIES)));
+      }
+      baselineTotal += System.nanoTime() - start;
+    }
+    long baselineMs = TimeUnit.NANOSECONDS.toMillis(baselineTotal / 3);
+
+    CacheHandle bounded = newBoundedCache(10_000);
+    for (Path p : rels) bounded.callGet(p);
+    for (int i = 0; i < ENTRIES; i++) bounded.callGet(rels.get(rnd.nextInt(ENTRIES)));
+    long boundedTotal = 0;
+    for (int r = 0; r < 3; r++) {
+      long start = System.nanoTime();
+      for (int i = 0; i < 20_000; i++) {
+        bounded.callGet(rels.get(rnd.nextInt(ENTRIES)));
+      }
+      boundedTotal += System.nanoTime() - start;
+    }
+    long boundedMs = TimeUnit.NANOSECONDS.toMillis(boundedTotal / 3);
+    assertTrue(
+        "Bounded cache hit path regression (baseline=" + baselineMs + "ms, bounded=" + boundedMs + "ms)",
+        boundedMs <= baselineMs * 1.5 + 10);
   }
+
   @Test(timeout = 10_000)
   public void testOptimizedLookupPathsNoOverhead() throws Exception {
     CacheHandle cache = newBoundedCache(10_000);
     Path p = writeText(cache.projectRoot, "opt/o.txt", "o");
     cache.callGet(p);
+    Files.delete(cache.projectRoot.resolve(p));
     long t1 = System.nanoTime();
-    for (int i = 0; i < 5000; i++) cache.callGet(p);
+    for (int i = 0; i < 5000; i++) {
+      assertNotNull(cache.callGet(p));
+    }
     long ms1 = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t1);
-    Path p2 = writeText(cache.projectRoot, "opt/o2.txt", "o2");
-    for (int i = 0; i < 1000; i++) cache.callGet(p2);
+
+    List<Path> extras = new ArrayList<>();
+    for (int i = 0; i < 5000; i++) {
+      Path pn = writeText(cache.projectRoot, "opt/n" + i + ".txt", "n" + i);
+      cache.callGet(pn);
+      extras.add(pn);
+    }
+
     long t2 = System.nanoTime();
-    for (int i = 0; i < 5000; i++) cache.callGet(p);
+    for (int i = 0; i < 5000; i++) {
+      if ((i & 1) == 0) {
+        assertNotNull(cache.callGet(p));
+      } else {
+        cache.callGet(extras.get(i / 2));
+      }
+    }
     long ms2 = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t2);
-    assertTrue("Hot lookups should remain optimized (ms2=" + ms2 + ", ms1=" + ms1 + ")", ms2 <= ms1 * 1.5 + 5);
+    double per1 = ms1 / 5000.0;
+    double per2 = ms2 / 5000.0;
+    assertTrue(
+        "Hot lookups should remain optimized (per2=" + per2 + ", per1=" + per1 + ")",
+        ms2 <= ms1 * 1.2 + 2);
   }
 
   private static boolean safeEquals(Object a, Object b) {
