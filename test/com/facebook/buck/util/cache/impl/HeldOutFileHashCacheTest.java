@@ -1383,37 +1383,84 @@ public class HeldOutFileHashCacheTest {
 
   @Test(timeout = 10_000)
   public void testOptimizedLookupPathsNoOverhead() throws Exception {
-    CacheHandle cache = newBoundedCache(10_000);
-    Path p = writeText(cache.projectRoot, "opt/o.txt", "o");
-    cache.callGet(p);
-    Files.delete(cache.projectRoot.resolve(p));
-    long t1 = System.nanoTime();
-    for (int i = 0; i < 5000; i++) {
-      assertNotNull(cache.callGet(p));
-    }
-    long ms1 = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t1);
+    class CountingFakeProjectFilesystem extends com.facebook.buck.io.filesystem.impl.FakeProjectFilesystem {
+      final AtomicInteger ops = new AtomicInteger();
 
-    List<Path> extras = new ArrayList<>();
-    for (int i = 0; i < 5000; i++) {
-      Path pn = writeText(cache.projectRoot, "opt/n" + i + ".txt", "n" + i);
-      cache.callGet(pn);
-      extras.add(pn);
-    }
+      @Override
+      public byte[] getFileBytes(Path path) {
+        ops.incrementAndGet();
+        return super.getFileBytes(path);
+      }
 
-    long t2 = System.nanoTime();
-    for (int i = 0; i < 5000; i++) {
-      if ((i & 1) == 0) {
-        assertNotNull(cache.callGet(p));
-      } else {
-        cache.callGet(extras.get(i / 2));
+      @Override
+      public <A extends java.nio.file.attribute.BasicFileAttributes> A readAttributes(
+          Path path, Class<A> type, LinkOption... options) throws IOException {
+        ops.incrementAndGet();
+        return super.readAttributes(path, type, options);
+      }
+
+      @Override
+      public java.io.InputStream newFileInputStream(Path path) throws IOException {
+        ops.incrementAndGet();
+        return super.newFileInputStream(path);
+      }
+
+      void reset() {
+        ops.set(0);
+      }
+
+      int count() {
+        return ops.get();
       }
     }
-    long ms2 = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t2);
-    double per1 = ms1 / 5000.0;
-    double per2 = ms2 / 5000.0;
-    assertTrue(
-        "Hot lookups should remain optimized (per2=" + per2 + ", per1=" + per1 + ")",
-        ms2 <= ms1 * 1.2 + 2);
+
+    Object prevFs = fakeFs;
+    try {
+      CountingFakeProjectFilesystem fs = new CountingFakeProjectFilesystem();
+      fakeFs = fs;
+      CacheHandle cache = newBoundedCache(10_000);
+      Path p = writeText(cache.projectRoot, "opt/o.txt", "o");
+      cache.callGet(p);
+      fs.reset();
+      long t1 = System.nanoTime();
+      for (int i = 0; i < 5000; i++) {
+        assertNotNull(cache.callGet(p));
+      }
+      long dur1 = System.nanoTime() - t1;
+      assertEquals("No filesystem operations on hot cache hits", 0, fs.count());
+      long ms1 = TimeUnit.NANOSECONDS.toMillis(dur1);
+
+      List<Path> extras = new ArrayList<>();
+      for (int i = 0; i < 5000; i++) {
+        Path pn = writeText(cache.projectRoot, "opt/n" + i + ".txt", "n" + i);
+        cache.callGet(pn);
+        extras.add(pn);
+      }
+
+      fs.reset();
+      long t2 = System.nanoTime();
+      for (int i = 0; i < 5000; i++) {
+        if ((i & 1) == 0) {
+          assertNotNull(cache.callGet(p));
+        } else {
+          cache.callGet(extras.get(i / 2));
+        }
+      }
+      long dur2 = System.nanoTime() - t2;
+      assertEquals("No filesystem operations on cached mixed hits", 0, fs.count());
+      long ms2 = TimeUnit.NANOSECONDS.toMillis(dur2);
+      double per1 = dur1 / 5000.0 / 1_000_000.0;
+      double per2 = dur2 / 5000.0 / 1_000_000.0;
+      assertTrue("Hot lookup cost should stay extremely low (per1=" + per1 + ")", per1 < 0.01);
+      assertTrue(
+          "Hot lookup cost should remain consistent (per2=" + per2 + ", per1=" + per1 + ")",
+          Math.abs(per2 - per1) < 0.001);
+      assertTrue(
+          "Hot lookups should remain optimized (per2=" + per2 + ", per1=" + per1 + ")",
+          ms2 <= ms1 * 1.2 + 2);
+    } finally {
+      fakeFs = prevFs;
+    }
   }
 
   private static boolean safeEquals(Object a, Object b) {
